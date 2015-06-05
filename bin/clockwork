@@ -4,49 +4,22 @@
 # make sure the program is invoked through bundle exec
 exec('bundle', 'exec', $PROGRAM_NAME, *ARGV) unless ENV['BUNDLE_GEMFILE']
 
-require 'logger'
-require 'diplomat'
 require 'clockwork'
-require 'clockwork/database_events'
-require 'sequel'
 
-db_url = ENV.fetch('DATABASE_URL', nil)
+$LOAD_PATH << File.expand_path('../lib', File.dirname(__FILE__))
 
-if db_url
-  db = Sequel.connect(db_url)
-else
-  consul = ENV['CONSUL'] || 'consul'
-  Diplomat.configuration.url = ("http://#{consul}:8500")
-  postgres_config = Diplomat::Service.get('postgres')
+require 'skalera/services'
+Skalera::Services.bootstrap('clockwork')
 
-  host = postgres_config['ServiceAddress']
-  port = postgres_config['ServicePort']
-  url = "postres://#{host}:#{port}/events"
-
-  db = Skalera::Models::DB.connect(url)
-end
-
-at_exit { db.disconnect }
+db = Skalera::Services::Postgres.instance('clockwork')
 
 require 'clockwork_database_events'
 ClockworkDatabaseEvents.migrate(db)
 
-require 'clockwork_database_events/models'
+require 'clockwork_docker'
 
-module Clockwork
-  logger = Logger.new(STDOUT)
-
-  # required to enable database syncing support
-  Clockwork.manager = DatabaseEvents::Manager.new
-
-  sync_database_events(model: ClockworkDatabaseEvent, every: 1.minute) do |model|
-    if model.name
-      logger.info("scheduling sidekiq job for #{model.name}")
-      Sidekiq::Client.push('class' => model.name)
-    else
-      logger.warn('no class name provided')
-    end
-  end
+begin
+  Clockwork::run
+rescue => e
+  Airbrake.notify_or_ignore(e, cgi_data: ENV.to_hash)
 end
-
-Clockwork::run
